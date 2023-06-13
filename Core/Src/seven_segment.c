@@ -153,8 +153,8 @@ void seven_segment_WS2812_send(seven_segment_t *led_obj) {
             indx++;
         }
     
-        HAL_TIM_PWM_Start_DMA(led_obj->htim, led_obj->channel, (uint32_t *)led_obj->pwm_data, indx);
         while (!led_obj->data_sent_flag){};
         led_obj->data_sent_flag = 0;
+        HAL_TIM_PWM_Start_DMA(led_obj->htim, led_obj->channel, (uint32_t *)led_obj->pwm_data, indx);
         HAL_GPIO_WritePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin, GPIO_PIN_RESET);
     }
