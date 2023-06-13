@@ -52,23 +52,23 @@
 #define UART_RX_BUFFER_SIZE 64
 
 // Remote Code Defines
-#define REMOTE_UP		0xFF18E7
-#define REMOTE_DOWN		0xFF4AB5
-#define REMOTE_LEFT		0xFF10EF
-#define REMOTE_RIGHT	0xFF5AA5
-#define REMOTE_OK 		0xFF38C7
-#define REMOTE_NUM_1	0xFFA25D
-#define REMOTE_NUM_2 	0xFF629D
-#define REMOTE_NUM_3 	0xFFE21D
-#define REMOTE_NUM_4 	0xFF22DD
-#define REMOTE_NUM_5 	0xFF02FD
-#define REMOTE_NUM_6 	0xFFC23D
-#define REMOTE_NUM_7 	0xFFE01F
-#define REMOTE_NUM_8 	0xFFA857
-#define REMOTE_NUM_9 	0xFF906F
-#define REMOTE_NUM_0 	0xFF9867
-#define REMOTE_STAR 	0xFF6897
-#define REMOTE_POUND 	0xFFB04F
+#define REMOTE_UP		0x807F8C73
+#define REMOTE_DOWN		0x807FA55A
+#define REMOTE_LEFT		0x807F8877
+#define REMOTE_RIGHT	0x807FAD52
+#define REMOTE_OK 		0x807F9C63
+#define REMOTE_NUM_1	0x807FD12E
+#define REMOTE_NUM_2 	0x807FB14E
+#define REMOTE_NUM_3 	0x807FF10E
+#define REMOTE_NUM_4 	0x807F916E
+#define REMOTE_NUM_5 	0x807F817E
+#define REMOTE_NUM_6 	0x807FE11E
+#define REMOTE_NUM_7 	0x807FF00F
+#define REMOTE_NUM_8 	0x807FD42B
+#define REMOTE_NUM_9 	0x807FC837
+#define REMOTE_NUM_0 	0x807FCC33
+#define REMOTE_STAR 	0x807FB44B
+#define REMOTE_POUND 	0x807FD827
 
 // Date Format
 #define DATE_FORMAT "%02d/%02d/%04d"
@@ -762,6 +762,10 @@ void StartDefaultTask(void *argument)
 	pcf8563_err_t pcf_err;
 	int prev_second = 0;
 	int counter = 0;
+	uint8_t brightness = 20;
+	uint8_t color_index = 0;
+	uint8_t is_paused = 0;
+	uint16_t delay_length = 500;
 
 	seven_segment_error_t led_error;
 
@@ -769,6 +773,7 @@ void StartDefaultTask(void *argument)
 	if (led_error != SEVEN_SEGMENT_OK) {
 		Error_Handler();
 	}
+	led.data_sent_flag = 1;
 
 	seven_segment_set_blank(&led, 0);
 	seven_segment_set_digit(&led, 0, 1, 0);
@@ -852,34 +857,27 @@ void StartDefaultTask(void *argument)
 		led.sacrificial_led_flag = HAL_GPIO_ReadPin(DIP2_GPIO_Port, DIP2_Pin) == GPIO_PIN_SET ? 1 : 0;
 		mute_status_led = HAL_GPIO_ReadPin(DIP1_GPIO_Port, DIP1_Pin) == GPIO_PIN_SET ? 1 : 0;
 
-		if (!(inf_loop & 0b111)) {
+		if (!(inf_loop & 0b1) && !is_paused) {
 			counter++;
 			if (counter > 1000) counter = 0;
 
 			if (counter < 10) {
-				seven_segment_set_digit(&led, 0, counter, 0);
+				seven_segment_set_digit(&led, 0, counter, color_index);
 				seven_segment_set_blank(&led, 1);
 				seven_segment_set_blank(&led, 2);
 			}
 			else if (counter >= 10 && counter < 100) {
-				seven_segment_set_digit(&led, 0, counter / 10, 0);
-				seven_segment_set_digit(&led, 1, counter % 10, 0);
+				seven_segment_set_digit(&led, 0, counter / 10, color_index);
+				seven_segment_set_digit(&led, 1, counter % 10, color_index);
 				seven_segment_set_blank(&led, 2);				
 			}
 			else if (counter >= 100) {
-				seven_segment_set_digit(&led, 0, counter / 100, 0);
-				seven_segment_set_digit(&led, 1, (counter / 10) % 10, 0);
-				seven_segment_set_digit(&led, 2, counter % 10, 0);
+				seven_segment_set_digit(&led, 0, counter / 100, color_index);
+				seven_segment_set_digit(&led, 1, (counter / 10) % 10, color_index);
+				seven_segment_set_digit(&led, 2, counter % 10, color_index);
 			}
-			seven_segment_set_brightness(&led, 15);
+			seven_segment_set_brightness(&led, brightness);
 			seven_segment_WS2812_send(&led);
-		}
-		if (mute_status_led) {
-			HAL_GPIO_WritePin(LED_HB_GPIO_Port, LED_HB_Pin, GPIO_PIN_RESET);
-		}
-
-		if(!(inf_loop & 0b1111) && !mute_status_led) {
-			HAL_GPIO_TogglePin(LED_HB_GPIO_Port, LED_HB_Pin);
 		}
 
 		if (!is_ring_buffer_empty(&codeBuffer)) {
@@ -888,6 +886,65 @@ void StartDefaultTask(void *argument)
 			ssd1306_SetCursor(5, 20);
 			ssd1306_WriteString(lcd_buffer, Font_7x10, White);
 			ssd1306_UpdateScreen();
+
+			switch (remote_cmd)
+			{
+			case REMOTE_UP:
+				brightness += 5;
+				if (brightness > 45) brightness = 45;
+				break;
+			case REMOTE_DOWN:
+				brightness -= 5;
+				if (brightness > 45) brightness = 0;
+				break;
+			case REMOTE_LEFT:
+				color_index--;
+				if (color_index > 6) color_index = 6;
+				break;
+			case REMOTE_RIGHT:
+				color_index++;
+				if (color_index > 6) color_index = 0;
+				break;
+			case REMOTE_OK:
+				is_paused = !is_paused;
+				break;
+			case REMOTE_NUM_1:
+				delay_length = 100;
+				break;
+			case REMOTE_NUM_2:
+				delay_length = 200;
+				break;
+			case REMOTE_NUM_3:
+				delay_length = 300;
+				break;
+			case REMOTE_NUM_4:
+				delay_length = 400;
+				break;
+			case REMOTE_NUM_5:
+				delay_length = 500;
+				break;
+			case REMOTE_NUM_6:
+				delay_length = 600;
+				break;
+			case REMOTE_NUM_7:
+				delay_length = 700;
+				break;
+			case REMOTE_NUM_8:
+				delay_length = 800;
+				break;
+			case REMOTE_NUM_9:
+				delay_length = 900;
+				break;
+			case REMOTE_NUM_0:
+				delay_length = 1000;
+				break;
+			case REMOTE_STAR:
+				counter = 0;
+				break;
+			default:
+				break;
+			}
+
 		}
 
 		if (!(inf_loop & 0b11)) {
@@ -932,7 +989,8 @@ void StartHeartbeatTask(void *argument)
 	/* Infinite loop */
 	for(;;)
 	{
-		osDelay(1);
+		HAL_GPIO_TogglePin(LED_HB_GPIO_Port, LED_HB_Pin);
+		osDelay(1000);
 	}
 	/* USER CODE END StartHeartbeatTask */
 }
