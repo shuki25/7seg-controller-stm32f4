@@ -33,6 +33,8 @@
 #include "i2c_wrapper.h"
 #include "pcf8563.h"
 #include "seven_segment.h"
+#include "eeprom.h"
+#include "bcd_util.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,7 +51,8 @@
 #define NUM_SACRIFICIAL_LED 1
 #define PI 3.14159265358979323846
 #define CODE_BUFFER_SIZE 8
-#define UART_RX_BUFFER_SIZE 64
+#define UART_RX_BUFFER_SIZE 512
+#define IR_REMOTE_BUFFER_SIZE 16
 
 // Remote Code Defines
 #define REMOTE_UP		0x807F8C73
@@ -71,8 +74,13 @@
 #define REMOTE_POUND 	0x807FD827
 
 // Date Format
-#define DATE_FORMAT "%02d/%02d/%04d"
+#define DATE_FORMAT "%04d-%02d-%02d"
 #define TIME_FORMAT "%02d:%02d:%02d"
+
+// EEPROM Defines
+#define EEPROM_DATE_PAGE 0
+#define EEPROM_DATE_OFFSET 0
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -236,7 +244,7 @@ int main(void)
 	}
 	RTC_sync_init(&hrtc, &huart2, &htim1, &uartRxBuffer);
 
-	if (ring_buffer_init(&codeBuffer, UART_RX_BUFFER_SIZE, sizeof(uint32_t)) == RING_BUFFER_MALLOC_FAILED) {
+	if (ring_buffer_init(&codeBuffer, IR_REMOTE_BUFFER_SIZE, sizeof(uint32_t)) == RING_BUFFER_MALLOC_FAILED) {
 		Error_Handler();
 	}
 
@@ -578,11 +586,11 @@ static void MX_USART2_UART_Init(void)
 
 	/* USER CODE END USART2_Init 1 */
 	huart2.Instance = USART2;
-	huart2.Init.BaudRate = 115200;
+	huart2.Init.BaudRate = 9600;
 	huart2.Init.WordLength = UART_WORDLENGTH_8B;
 	huart2.Init.StopBits = UART_STOPBITS_1;
 	huart2.Init.Parity = UART_PARITY_NONE;
-	huart2.Init.Mode = UART_MODE_TX_RX;
+	huart2.Init.Mode = UART_MODE_RX;
 	huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
 	huart2.Init.OverSampling = UART_OVERSAMPLING_16;
 	if (HAL_UART_Init(&huart2) != HAL_OK)
@@ -761,11 +769,20 @@ void StartDefaultTask(void *argument)
 	pcf8563_t pcf;
 	pcf8563_err_t pcf_err;
 	int prev_second = 0;
-	int counter = 0;
 	uint8_t brightness = 20;
 	uint8_t color_index = 0;
 	uint8_t is_paused = 0;
 	uint16_t delay_length = 500;
+	bcd_time_t start_datetime;
+	bcd_time_t current_datetime;
+	eeprom_t eeprom;
+	uint8_t display_state = 0;
+	uint32_t days_since_start = 0;
+	uint32_t days_since_start_prev = 0;
+	uint8_t hours_since_start = 0;
+	uint8_t hours_since_start_prev = 0;
+	uint8_t update_display = 0;
+	uint8_t sacrifical_led_prev = 0;
 
 	seven_segment_error_t led_error;
 
@@ -775,10 +792,11 @@ void StartDefaultTask(void *argument)
 	}
 	led.data_sent_flag = 1;
 
+	// Splash Screen
 	seven_segment_set_blank(&led, 0);
-	seven_segment_set_digit(&led, 0, 1, 0);
-	seven_segment_set_digit(&led, 1, 2, 1);
-	seven_segment_set_digit(&led, 2, 3, 2);
+	seven_segment_set_digit(&led, 0, 10, 0);
+	seven_segment_set_digit(&led, 1, 11, 1);
+	seven_segment_set_digit(&led, 2, 12, 2);
 	seven_segment_set_brightness(&led, 25);
 	seven_segment_WS2812_send(&led);
 
@@ -850,6 +868,35 @@ void StartDefaultTask(void *argument)
 	}
 	ssd1306_Fill(Black);
 
+	// Initialize EEPROM if not initialized
+	eeprom_status_t eeprom_status = eeprom_init(&eeprom, &hi2c1, EEPROM_GPIO_Port, EEPROM_Pin);
+	if (eeprom_status == EEPROM_OK) {
+		eeprom_status =	eeprom_read(&eeprom, EEPROM_DATE_PAGE, EEPROM_DATE_OFFSET, (uint8_t *)&start_datetime, sizeof(bcd_time_t));
+		if (eeprom_status != EEPROM_OK) {
+			Error_Handler();
+		}
+		if (start_datetime.year < 2023 || start_datetime.year > 2050) {
+			HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+			HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+			bcd_rtc_to_bcd_time(&sTime, &sDate, &start_datetime);
+			if(eeprom.write_protected == 1) {
+				eeprom_write_protect(&eeprom, 0);
+			}
+			eeprom_status = eeprom_write(&eeprom, EEPROM_DATE_PAGE, EEPROM_DATE_OFFSET, (uint8_t *)&start_datetime, sizeof(bcd_time_t));
+			if (eeprom_status != EEPROM_OK) {
+				Error_Handler();
+			}
+			eeprom_write_protect(&eeprom, 1);
+		}
+	} else {
+		Error_Handler();
+	}
+	
+	// start_datetime.hours = 23;
+	// start_datetime.minutes = 19;
+	// start_datetime.day = 12;
+	hours_since_start = 0;
+
 	/* Infinite loop */
 	for(;;)
 	{
@@ -857,27 +904,122 @@ void StartDefaultTask(void *argument)
 		led.sacrificial_led_flag = HAL_GPIO_ReadPin(DIP2_GPIO_Port, DIP2_Pin) == GPIO_PIN_SET ? 1 : 0;
 		mute_status_led = HAL_GPIO_ReadPin(DIP1_GPIO_Port, DIP1_Pin) == GPIO_PIN_SET ? 1 : 0;
 
-		if (!(inf_loop & 0b1) && !is_paused) {
-			counter++;
-			if (counter > 1000) counter = 0;
+		if (sacrifical_led_prev != led.sacrificial_led_flag) {
+			update_display = 1;
+			sacrifical_led_prev = led.sacrificial_led_flag;
+		}
 
-			if (counter < 10) {
-				seven_segment_set_digit(&led, 0, counter, color_index);
-				seven_segment_set_blank(&led, 1);
-				seven_segment_set_blank(&led, 2);
+		if (has_external_rtc && use_external_rtc) {
+			pcf8563_read(&pcf, &remote_time);
+			current_datetime.year = remote_time.tm_year + 1900;
+			current_datetime.month = remote_time.tm_mon + 1;
+			current_datetime.day = remote_time.tm_mday;
+			current_datetime.hours = remote_time.tm_hour;
+			current_datetime.minutes = remote_time.tm_min;
+			current_datetime.seconds = remote_time.tm_sec;
+			current_datetime.day_of_week = remote_time.tm_wday;
+		}
+		else {
+			HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+			HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+			bcd_rtc_to_bcd_time(&sTime, &sDate, &current_datetime);
+		}
+		
+		days_since_start = bcd_days_between_dates(&start_datetime, &current_datetime);
+		
+		// Rotating Messages
+		if (!(inf_loop & 0b11111)) {
+			if (display_state == 0) {
+				sprintf(lcd_buffer, " Start Date ");
+				ssd1306_SetCursor(22, 20);
 			}
-			else if (counter >= 10 && counter < 100) {
-				seven_segment_set_digit(&led, 0, counter / 10, color_index);
-				seven_segment_set_digit(&led, 1, counter % 10, color_index);
-				seven_segment_set_blank(&led, 2);				
+			else if (display_state == 1) {
+				sprintf(lcd_buffer, DATE_FORMAT, start_datetime.year, start_datetime.month, start_datetime.day);
+				ssd1306_SetCursor(28, 20);
 			}
-			else if (counter >= 100) {
-				seven_segment_set_digit(&led, 0, counter / 100, color_index);
-				seven_segment_set_digit(&led, 1, (counter / 10) % 10, color_index);
-				seven_segment_set_digit(&led, 2, counter % 10, color_index);
+			else if (display_state == 3) {
+				sprintf(lcd_buffer, " Current Date ");
+				ssd1306_SetCursor(15, 20);
 			}
-			seven_segment_set_brightness(&led, brightness);
-			seven_segment_WS2812_send(&led);
+			else if (display_state == 4) {
+				HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+				HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+				sprintf(lcd_buffer, "  " DATE_FORMAT "  ", sDate.Year + 2000, sDate.Month, sDate.Date);
+				ssd1306_SetCursor(15, 20);
+			}
+			else if (display_state == 6) {
+				sprintf(lcd_buffer, "Nbr Days");
+				ssd1306_SetCursor(36, 20);
+			}
+			else if (display_state == 7) {
+				if (days_since_start == 1) {
+					sprintf(lcd_buffer, "  1 day   ");
+				}
+				else {
+					sprintf(lcd_buffer, "  %d days  ", (int)days_since_start);
+
+				}
+				int center = (128 - (strlen(lcd_buffer) * 7)) / 2;
+				ssd1306_SetCursor(center, 20);
+			}
+			else {
+				sprintf(lcd_buffer, "                  ");
+				ssd1306_SetCursor(0, 20);
+			}
+
+			ssd1306_WriteString(lcd_buffer, Font_7x10, White);
+			ssd1306_UpdateScreen();
+			display_state++;
+			if (display_state > 8) display_state = 0;
+		}
+
+		if (days_since_start < 1) {
+			hours_since_start = bcd_hours_between_times(&start_datetime, &current_datetime);
+			if (hours_since_start < 24) {
+				if (hours_since_start != hours_since_start_prev || update_display) {
+					uint8_t hour_color_index = color_index + 1;
+					if (hour_color_index > 6) hour_color_index = 0;
+
+					if (hours_since_start < 10) {
+						seven_segment_set_digit(&led, 0, hours_since_start, color_index);
+						seven_segment_set_digit(&led, 1, 16, hour_color_index);
+						seven_segment_set_blank(&led, 2);
+					}
+					else if (hours_since_start >= 10 && hours_since_start < 100) {
+						seven_segment_set_digit(&led, 0, hours_since_start / 10, color_index);
+						seven_segment_set_digit(&led, 1, hours_since_start % 10, color_index);
+						seven_segment_set_digit(&led, 2, 16, hour_color_index);				
+					}
+					seven_segment_set_brightness(&led, brightness);
+					seven_segment_WS2812_send(&led);
+					hours_since_start_prev = hours_since_start;
+					update_display = 0;
+				}
+			}
+		}
+
+		if (days_since_start >= 1) {
+			if (days_since_start != days_since_start_prev || update_display) {
+				if (days_since_start < 10) {
+					seven_segment_set_digit(&led, 0, days_since_start, color_index);
+					seven_segment_set_blank(&led, 1);
+					seven_segment_set_blank(&led, 2);
+				}
+				else if (days_since_start >= 10 && days_since_start < 100) {
+					seven_segment_set_digit(&led, 0, days_since_start / 10, color_index);
+					seven_segment_set_digit(&led, 1, days_since_start % 10, color_index);
+					seven_segment_set_blank(&led, 2);				
+				}
+				else if (days_since_start >= 100) {
+					seven_segment_set_digit(&led, 0, days_since_start / 100, color_index);
+					seven_segment_set_digit(&led, 1, (days_since_start / 10) % 10, color_index);
+					seven_segment_set_digit(&led, 2, days_since_start % 10, color_index);
+				}
+				seven_segment_set_brightness(&led, brightness);
+				seven_segment_WS2812_send(&led);
+				days_since_start_prev = days_since_start;
+				update_display = 0;
+			}
 		}
 
 		if (!is_ring_buffer_empty(&codeBuffer)) {
@@ -892,18 +1034,22 @@ void StartDefaultTask(void *argument)
 			case REMOTE_UP:
 				brightness += 5;
 				if (brightness > 45) brightness = 45;
+				update_display = 1;
 				break;
 			case REMOTE_DOWN:
 				brightness -= 5;
 				if (brightness > 45) brightness = 0;
+				update_display = 1;
 				break;
 			case REMOTE_LEFT:
 				color_index--;
 				if (color_index > 6) color_index = 6;
+				update_display = 1;
 				break;
 			case REMOTE_RIGHT:
 				color_index++;
 				if (color_index > 6) color_index = 0;
+				update_display = 1;
 				break;
 			case REMOTE_OK:
 				is_paused = !is_paused;
@@ -939,7 +1085,17 @@ void StartDefaultTask(void *argument)
 				delay_length = 1000;
 				break;
 			case REMOTE_STAR:
-				counter = 0;
+				HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+				HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+				bcd_rtc_to_bcd_time(&sTime, &sDate, &start_datetime);
+				if(eeprom.write_protected == 1) {
+					eeprom_write_protect(&eeprom, 0);
+				}
+				eeprom_status = eeprom_write(&eeprom, EEPROM_DATE_PAGE, EEPROM_DATE_OFFSET, (uint8_t *)&start_datetime, sizeof(bcd_time_t));
+				if (eeprom_status != EEPROM_OK) {
+					Error_Handler();
+				}
+				eeprom_write_protect(&eeprom, 1);
 				break;
 			default:
 				break;
@@ -1027,6 +1183,15 @@ void Error_Handler(void)
 	__disable_irq();
 	while (1)
 	{
+		int i;
+		HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
+		for(i=0;i<2000000;i++) { __NOP(); }
+		HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
+		for(i=0;i<2000000;i++) { __NOP(); }
+		HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
+		for(i=0;i<2000000;i++) { __NOP(); }
+		HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
+		for(i=0;i<8000000;i++) { __NOP(); }
 	}
 	/* USER CODE END Error_Handler_Debug */
 }
