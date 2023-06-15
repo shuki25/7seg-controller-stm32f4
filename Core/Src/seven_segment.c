@@ -22,7 +22,31 @@
 // typedef unsigned int uint32_t;
 // #endif
 
-const uint32_t digits[10] = {
+// Segments of a 7-segment display:
+//
+//   --a--
+//  |     |
+//  f     b
+//  |     |
+//   --g--
+//  |     |
+//  e     c
+//  |     |
+//   --d--
+//
+// However the LED strip is fed through in the order: g, b, a, f, e, d, c
+// Each segment has 4 LEDs.  The first LED is the one closest to the start of 
+// the center of the display (segment g).
+//
+// LED #17 is between f and e so it will remain off.
+//
+// We will pack these LEDs into a single 32-bit integer.  The first 4 bits will
+// be the first LED, the next 4 bits will be the second LED, etc.
+//
+// e.g. 0b000ccccddddeeee0ffffaaaabbbbgggg
+//
+
+const uint32_t digits[17] = {
 		0b00011111111111101111111111110000, // 0
 		0b00011110000000000000000011110000, // 1
 		0b00000001111111100000111111111111, // 2
@@ -32,7 +56,14 @@ const uint32_t digits[10] = {
 		0b00011111111111101111111100001111, // 6
 		0b00011110000000000000111111110000, // 7
 		0b00011111111111101111111111111111, // 8
-		0b00011111111000001111111111111111  // 9
+		0b00011111111000001111111111111111, // 9
+        0b00011110000111101111111111111111, // A
+        0b00011111111111101111000000001111, // B
+        0b00000001111111101111111100000000, // C
+        0b00011111111111100000000011111111, // D
+        0b00000001111111101111111100001111, // E
+        0b00000000000111101111111100001111, // F
+        0b00011110000111101111000011111111  // H
 };
 
 const uint8_t color_groups[7][3] = {
