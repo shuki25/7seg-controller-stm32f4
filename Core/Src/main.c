@@ -35,6 +35,8 @@
 #include "seven_segment.h"
 #include "eeprom.h"
 #include "bcd_util.h"
+#include "nmea.h"
+#include "sync_gps_rtc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,6 +98,7 @@ RTC_HandleTypeDef hrtc;
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim5;
 DMA_HandleTypeDef hdma_tim3_ch1_trig;
 
 UART_HandleTypeDef huart2;
@@ -162,6 +165,7 @@ static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_TIM5_Init(void);
 void StartDefaultTask(void *argument);
 void StartHeartbeatTask(void *argument);
 
@@ -230,6 +234,7 @@ int main(void)
 	MX_USART2_UART_Init();
 	MX_I2C1_Init();
 	MX_TIM1_Init();
+	MX_TIM5_Init();
 	/* USER CODE BEGIN 2 */
 
 	HAL_RTC_Init(&hrtc);
@@ -239,9 +244,11 @@ int main(void)
 
 	if (ring_buffer_init(&uartRxBuffer, UART_RX_BUFFER_SIZE, sizeof(uint8_t)) == RING_BUFFER_MALLOC_FAILED) {
 		Error_Handler();
-	} else {
-		HAL_UART_Receive_IT(&huart2, uartRxData, 1);
 	}
+	if (sync_gps_rtc_init(&hrtc, &huart2, &htim5, &uartRxBuffer) != SYNC_GPS_RTC_STATE_OK) {
+		Error_Handler();
+	}
+
 	RTC_sync_init(&hrtc, &huart2, &htim1, &uartRxBuffer);
 
 	if (ring_buffer_init(&codeBuffer, IR_REMOTE_BUFFER_SIZE, sizeof(uint32_t)) == RING_BUFFER_MALLOC_FAILED) {
@@ -250,6 +257,7 @@ int main(void)
 
 	HAL_TIM_Base_Start(&htim1);
 	HAL_TIM_Base_Start(&htim2);
+	HAL_TIM_Base_Start(&htim5);
 
 	__HAL_TIM_SET_COUNTER(&htim2, 0);
 
@@ -571,6 +579,51 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+ * @brief TIM5 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM5_Init(void)
+{
+
+	/* USER CODE BEGIN TIM5_Init 0 */
+
+	/* USER CODE END TIM5_Init 0 */
+
+	TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+	TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+	/* USER CODE BEGIN TIM5_Init 1 */
+
+	/* USER CODE END TIM5_Init 1 */
+	htim5.Instance = TIM5;
+	htim5.Init.Prescaler = 8400-1;
+	htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim5.Init.Period = 4294967295;
+	htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+	if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+	if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	/* USER CODE BEGIN TIM5_Init 2 */
+
+	/* USER CODE END TIM5_Init 2 */
+
+}
+
+/**
  * @brief USART2 Initialization Function
  * @param None
  * @retval None
@@ -731,9 +784,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	if (!ring_buffer_enqueue(&uartRxBuffer, (void *)uartRxData)) {
-		Error_Handler();
-	}
+	ring_buffer_enqueue(&uartRxBuffer, (void *)uartRxData);
 	HAL_UART_Receive_IT(&huart2, uartRxData, 1);
 }
 
@@ -772,9 +823,9 @@ void StartDefaultTask(void *argument)
 	uint8_t brightness = 20;
 	uint8_t color_index = 0;
 	uint8_t is_paused = 0;
-	uint16_t delay_length = 500;
 	bcd_time_t start_datetime;
 	bcd_time_t current_datetime;
+	bcd_time_t sync_gps_datetime;
 	eeprom_t eeprom;
 	uint8_t display_state = 0;
 	uint32_t days_since_start = 0;
@@ -783,6 +834,7 @@ void StartDefaultTask(void *argument)
 	uint8_t hours_since_start_prev = 0;
 	uint8_t update_display = 0;
 	uint8_t sacrifical_led_prev = 0;
+	sync_gps_rtc_state_t sync_gps_rtc_state = 0;
 
 	seven_segment_error_t led_error;
 
@@ -891,7 +943,7 @@ void StartDefaultTask(void *argument)
 	} else {
 		Error_Handler();
 	}
-	
+
 	// start_datetime.hours = 23;
 	// start_datetime.minutes = 19;
 	// start_datetime.day = 12;
@@ -924,9 +976,16 @@ void StartDefaultTask(void *argument)
 			HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 			bcd_rtc_to_bcd_time(&sTime, &sDate, &current_datetime);
 		}
-		
+
+		if (current_datetime.year > start_datetime.year+5 || current_datetime.year < start_datetime.year) {
+			sync_gps_rtc_set(&start_datetime);
+			HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+			HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+			bcd_rtc_to_bcd_time(&sTime, &sDate, &current_datetime);
+		}
+
 		days_since_start = bcd_days_between_dates(&start_datetime, &current_datetime);
-		
+
 		// Rotating Messages
 		if (!(inf_loop & 0b11111)) {
 			if (display_state == 0) {
@@ -1054,35 +1113,25 @@ void StartDefaultTask(void *argument)
 			case REMOTE_OK:
 				is_paused = !is_paused;
 				break;
-			case REMOTE_NUM_1:
-				delay_length = 100;
+			case REMOTE_NUM_1:			
 				break;
-			case REMOTE_NUM_2:
-				delay_length = 200;
+			case REMOTE_NUM_2:				
 				break;
-			case REMOTE_NUM_3:
-				delay_length = 300;
+			case REMOTE_NUM_3:				
 				break;
-			case REMOTE_NUM_4:
-				delay_length = 400;
+			case REMOTE_NUM_4:				
 				break;
-			case REMOTE_NUM_5:
-				delay_length = 500;
+			case REMOTE_NUM_5:				
 				break;
-			case REMOTE_NUM_6:
-				delay_length = 600;
+			case REMOTE_NUM_6:				
 				break;
-			case REMOTE_NUM_7:
-				delay_length = 700;
+			case REMOTE_NUM_7:				
 				break;
-			case REMOTE_NUM_8:
-				delay_length = 800;
+			case REMOTE_NUM_8:				
 				break;
-			case REMOTE_NUM_9:
-				delay_length = 900;
+			case REMOTE_NUM_9:				
 				break;
-			case REMOTE_NUM_0:
-				delay_length = 1000;
+			case REMOTE_NUM_0:				
 				break;
 			case REMOTE_STAR:
 				HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
@@ -1096,6 +1145,48 @@ void StartDefaultTask(void *argument)
 					Error_Handler();
 				}
 				eeprom_write_protect(&eeprom, 1);
+				break;
+			case REMOTE_POUND:
+				ssd1306_Fill(Black);
+				sprintf(lcd_buffer, "Syncing...");
+				ssd1306_SetCursor(3, 0);
+				ssd1306_WriteString(lcd_buffer, Font_11x18, White);
+				ssd1306_UpdateScreen();
+				sprintf(lcd_buffer, "Waiting for GPS");
+				ssd1306_SetCursor(8, 20);
+				ssd1306_WriteString(lcd_buffer, Font_7x10, White);
+				ssd1306_UpdateScreen();
+
+				// Start listening for NMEA data
+				ring_buffer_flush(&uartRxBuffer);
+				__HAL_TIM_SET_COUNTER(&htim5, 0);
+				HAL_UART_Receive_IT(&huart2, uartRxData, 1);
+				memset(&sync_gps_datetime, 0, sizeof(bcd_time_t));
+				sync_gps_rtc_state = sync_gps_rtc_sync(&sync_gps_datetime);
+				HAL_UART_AbortReceive_IT(&huart2);
+				if(sync_gps_rtc_state == SYNC_GPS_RTC_STATE_SYNCED) {
+					sync_gps_rtc_set(&sync_gps_datetime);
+					sprintf(lcd_buffer, " Syncing Clock ");
+					ssd1306_SetCursor(8, 20);
+					ssd1306_WriteString(lcd_buffer, Font_7x10, White);
+					ssd1306_UpdateScreen();
+					osDelay(1000);
+					ssd1306_Fill(Black);
+				} else if (sync_gps_rtc_state == SYNC_GPS_RTC_STATE_TIMEOUT) {
+					sprintf(lcd_buffer, "   Timed Out   ");
+					ssd1306_SetCursor(8, 20);
+					ssd1306_WriteString(lcd_buffer, Font_7x10, White);
+					ssd1306_UpdateScreen();
+					osDelay(1000);
+					ssd1306_Fill(Black);
+				} else if (sync_gps_rtc_state == SYNC_GPS_RTC_STATE_ERROR) {
+					sprintf(lcd_buffer, "   Error   ");
+					ssd1306_SetCursor(8, 20);
+					ssd1306_WriteString(lcd_buffer, Font_7x10, White);
+					ssd1306_UpdateScreen();
+					osDelay(1000);
+					ssd1306_Fill(Black);
+				}
 				break;
 			default:
 				break;
