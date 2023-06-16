@@ -37,6 +37,7 @@
 #include "bcd_util.h"
 #include "nmea.h"
 #include "sync_gps_rtc.h"
+#include "adj_date.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,25 +56,6 @@
 #define CODE_BUFFER_SIZE 8
 #define UART_RX_BUFFER_SIZE 512
 #define IR_REMOTE_BUFFER_SIZE 16
-
-// Remote Code Defines
-#define REMOTE_UP		0x807F8C73
-#define REMOTE_DOWN		0x807FA55A
-#define REMOTE_LEFT		0x807F8877
-#define REMOTE_RIGHT	0x807FAD52
-#define REMOTE_OK 		0x807F9C63
-#define REMOTE_NUM_1	0x807FD12E
-#define REMOTE_NUM_2 	0x807FB14E
-#define REMOTE_NUM_3 	0x807FF10E
-#define REMOTE_NUM_4 	0x807F916E
-#define REMOTE_NUM_5 	0x807F817E
-#define REMOTE_NUM_6 	0x807FE11E
-#define REMOTE_NUM_7 	0x807FF00F
-#define REMOTE_NUM_8 	0x807FD42B
-#define REMOTE_NUM_9 	0x807FC837
-#define REMOTE_NUM_0 	0x807FCC33
-#define REMOTE_STAR 	0x807FB44B
-#define REMOTE_POUND 	0x807FD827
 
 // Date Format
 #define DATE_FORMAT "%04d-%02d-%02d"
@@ -697,7 +679,7 @@ static void MX_GPIO_Init(void)
 
 	/*Configure GPIO pin : IR_RECV_Pin */
 	GPIO_InitStruct.Pin = IR_RECV_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+	GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	HAL_GPIO_Init(IR_RECV_GPIO_Port, &GPIO_InitStruct);
 
@@ -732,12 +714,24 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
+	static int counter;
 	if (GPIO_Pin == IR_RECV_Pin) {
 
-		int counter = (int)__HAL_TIM_GET_COUNTER(&htim2);
+		counter = (int)__HAL_TIM_GET_COUNTER(&htim2);
+		__HAL_TIM_SET_COUNTER(&htim2, 0);
 		// HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
 
-		if (counter > 13000) {
+		if (counter > 11000 && counter < 100000 && potentialRepeatCode && startIR && prevCode) {
+			repeatCodeCount++;
+
+			codeCmd = prevCode;
+			// ignore first two repeat codes and send every other repeat code
+			if (repeatCodeCount > 2 && repeatCodeCount % 2 == 0) {
+				repeatCode = 1;
+				ring_buffer_enqueue(&codeBuffer, (void *)&codeCmd);
+			}
+		}
+		else if (counter > 13000) {
 			tempCode = 0;
 			bitIndex = 0;
 			startIR = 1;
@@ -745,15 +739,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			potentialRepeatCode = 1;
 			repeatCodeCount = 0;
 			prevCode = codeCmd;
-		}
-		else if (counter > 11000 && potentialRepeatCode && !repeatCode && startIR && prevCode) {
-			repeatCodeCount++;
-
-			codeCmd = prevCode;
-			if (repeatCodeCount > 1) {  // ignore first repeat code
-				repeatCode = 1;
-				ring_buffer_enqueue(&codeBuffer, (void *)&codeCmd);
-			}
 		}
 		else if (counter > 1700) {
 			tempCode |= (1UL << (31-bitIndex));  // write 1
@@ -773,11 +758,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 				codeCmd = code;
 				ring_buffer_enqueue(&codeBuffer, (void *)&codeCmd);
 				// HAL_GPIO_WritePin(LED_UI_GPIO_Port, LED_UI_Pin, GPIO_PIN_RESET);
+			} else {
+				codeCmd = 0xFFFFFFFF;
 			}
 			bitIndex = 0;
 			startIR = 0;
 		}
-		__HAL_TIM_SET_COUNTER(&htim2, 0);
+		
 		// HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
 	}
 }
@@ -822,10 +809,10 @@ void StartDefaultTask(void *argument)
 	int prev_second = 0;
 	uint8_t brightness = 20;
 	uint8_t color_index = 0;
-	uint8_t is_paused = 0;
 	bcd_time_t start_datetime;
 	bcd_time_t current_datetime;
 	bcd_time_t sync_gps_datetime;
+	bcd_time_t adj_datetime;
 	eeprom_t eeprom;
 	uint8_t display_state = 0;
 	uint32_t days_since_start = 0;
@@ -834,6 +821,7 @@ void StartDefaultTask(void *argument)
 	uint8_t hours_since_start_prev = 0;
 	uint8_t update_display = 0;
 	uint8_t sacrifical_led_prev = 0;
+	uint8_t reset_delay = 50;
 	sync_gps_rtc_state_t sync_gps_rtc_state = 0;
 
 	seven_segment_error_t led_error;
@@ -1060,14 +1048,14 @@ void StartDefaultTask(void *argument)
 		if (days_since_start >= 1) {
 			if (days_since_start != days_since_start_prev || update_display) {
 				if (days_since_start < 10) {
-					seven_segment_set_digit(&led, 0, days_since_start, color_index);
-					seven_segment_set_blank(&led, 1);
+					seven_segment_set_blank(&led, 0);
+					seven_segment_set_digit(&led, 1, days_since_start, color_index);
 					seven_segment_set_blank(&led, 2);
 				}
 				else if (days_since_start >= 10 && days_since_start < 100) {
-					seven_segment_set_digit(&led, 0, days_since_start / 10, color_index);
-					seven_segment_set_digit(&led, 1, days_since_start % 10, color_index);
-					seven_segment_set_blank(&led, 2);				
+					seven_segment_set_blank(&led, 0);				
+					seven_segment_set_digit(&led, 1, days_since_start / 10, color_index);
+					seven_segment_set_digit(&led, 2, days_since_start % 10, color_index);
 				}
 				else if (days_since_start >= 100) {
 					seven_segment_set_digit(&led, 0, days_since_start / 100, color_index);
@@ -1083,10 +1071,11 @@ void StartDefaultTask(void *argument)
 
 		if (!is_ring_buffer_empty(&codeBuffer)) {
 			ring_buffer_dequeue(&codeBuffer, &remote_cmd);
-			sprintf(lcd_buffer, "Code: %0X     ", (unsigned int)remote_cmd);
-			ssd1306_SetCursor(5, 20);
-			ssd1306_WriteString(lcd_buffer, Font_7x10, White);
-			ssd1306_UpdateScreen();
+			// sprintf(lcd_buffer, "Code: %0X     ", (unsigned int)remote_cmd);
+			// ssd1306_SetCursor(5, 20);
+			// ssd1306_WriteString(lcd_buffer, Font_7x10, White);
+			// ssd1306_UpdateScreen();
+			// osDelay(3000);
 
 			switch (remote_cmd)
 			{
@@ -1111,45 +1100,58 @@ void StartDefaultTask(void *argument)
 				update_display = 1;
 				break;
 			case REMOTE_OK:
-				is_paused = !is_paused;
-				break;
-			case REMOTE_NUM_1:			
-				break;
-			case REMOTE_NUM_2:				
-				break;
-			case REMOTE_NUM_3:				
-				break;
-			case REMOTE_NUM_4:				
-				break;
-			case REMOTE_NUM_5:				
-				break;
-			case REMOTE_NUM_6:				
-				break;
-			case REMOTE_NUM_7:				
-				break;
-			case REMOTE_NUM_8:				
-				break;
-			case REMOTE_NUM_9:				
-				break;
-			case REMOTE_NUM_0:				
+				memcpy(&adj_datetime, &start_datetime, sizeof(bcd_time_t));
+				if(adj_date_task(&adj_datetime, &current_datetime, &codeBuffer) == ADJ_DATE_SAVE) {
+					memcpy(&start_datetime, &adj_datetime, sizeof(bcd_time_t));
+					if(eeprom.write_protected == 1) {
+						eeprom_write_protect(&eeprom, 0);
+					}
+					eeprom_status = eeprom_write(&eeprom, EEPROM_DATE_PAGE, EEPROM_DATE_OFFSET, (uint8_t *)&start_datetime, sizeof(bcd_time_t));
+					if (eeprom_status != EEPROM_OK) {
+						Error_Handler();
+					}
+					eeprom_write_protect(&eeprom, 1);
+				}
+				osDelay(1000);
+				ssd1306_Fill(Black);
+				update_display = 1;
 				break;
 			case REMOTE_STAR:
-				HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-				HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
-				bcd_rtc_to_bcd_time(&sTime, &sDate, &start_datetime);
-				if(eeprom.write_protected == 1) {
-					eeprom_write_protect(&eeprom, 0);
+				// Long press to reset start date
+				if (reset_delay == 0)  {
+					ssd1306_Fill(Black);
+					sprintf(lcd_buffer, "Resetting");
+					ssd1306_SetCursor(14, 0);
+					ssd1306_WriteString(lcd_buffer, Font_11x18, White);
+					ssd1306_UpdateScreen();
+					sprintf(lcd_buffer, "Start Date");
+					ssd1306_SetCursor(29, 20);
+					ssd1306_WriteString(lcd_buffer, Font_7x10, White);
+					ssd1306_UpdateScreen();
+					osDelay(1000);
+					// Reset start date to current date
+					HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+					HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+					bcd_rtc_to_bcd_time(&sTime, &sDate, &start_datetime);
+					if(eeprom.write_protected == 1) {
+						eeprom_write_protect(&eeprom, 0);
+					}
+					eeprom_status = eeprom_write(&eeprom, EEPROM_DATE_PAGE, EEPROM_DATE_OFFSET, (uint8_t *)&start_datetime, sizeof(bcd_time_t));
+					if (eeprom_status != EEPROM_OK) {
+						Error_Handler();
+					}
+					eeprom_write_protect(&eeprom, 1);
+					update_display = 1;
+					ssd1306_Fill(Black);
+					reset_delay = 20;
+				} else {
+					reset_delay--;
 				}
-				eeprom_status = eeprom_write(&eeprom, EEPROM_DATE_PAGE, EEPROM_DATE_OFFSET, (uint8_t *)&start_datetime, sizeof(bcd_time_t));
-				if (eeprom_status != EEPROM_OK) {
-					Error_Handler();
-				}
-				eeprom_write_protect(&eeprom, 1);
 				break;
 			case REMOTE_POUND:
 				ssd1306_Fill(Black);
-				sprintf(lcd_buffer, "Syncing...");
-				ssd1306_SetCursor(3, 0);
+				sprintf(lcd_buffer, "Sync Clock");
+				ssd1306_SetCursor(9, 0);
 				ssd1306_WriteString(lcd_buffer, Font_11x18, White);
 				ssd1306_UpdateScreen();
 				sprintf(lcd_buffer, "Waiting for GPS");
@@ -1191,7 +1193,9 @@ void StartDefaultTask(void *argument)
 			default:
 				break;
 			}
-
+			if (remote_cmd != REMOTE_STAR) {
+				reset_delay = 20;
+			}
 		}
 
 		if (!(inf_loop & 0b11)) {
@@ -1272,6 +1276,12 @@ void Error_Handler(void)
 	/* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
 	__disable_irq();
+
+	ssd1306_Fill(Black);
+	ssd1306_SetCursor(3, 7);
+	ssd1306_WriteString("FATAL ERROR", Font_11x18, White);
+	ssd1306_UpdateScreen();
+
 	while (1)
 	{
 		int i;

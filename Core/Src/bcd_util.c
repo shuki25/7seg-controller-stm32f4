@@ -74,8 +74,8 @@ uint32_t bcd_days_in_month(uint8_t month, uint8_t year) {
     return days;
 }
 
-uint32_t bcd_days_between_dates(bcd_time_t *start, bcd_time_t *end) {
-    uint32_t days = 0;
+int32_t bcd_days_between_dates(bcd_time_t *start, bcd_time_t *end) {
+    int32_t days = 0;
     uint8_t month = start->month;
     uint16_t year = start->year;
     uint8_t day = start->day;
@@ -85,6 +85,19 @@ uint32_t bcd_days_between_dates(bcd_time_t *start, bcd_time_t *end) {
     uint8_t end_hour = end->hours;
     uint8_t end_minute = end->minutes;
     uint8_t end_second = end->seconds;
+
+    // check if end date is before start date
+    if (year > end->year) {
+        return -1;
+    } else if (year == end->year) {
+        if (month > end->month) {
+            return -1;
+        } else if (month == end->month) {
+            if (day > end->day) {
+                return -1;
+            }
+        }
+    }
 
     while (month != end->month || year != end->year || day != end->day) {
         days++;

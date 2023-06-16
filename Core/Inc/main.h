@@ -81,6 +81,25 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+// Remote Code Defines
+#define REMOTE_UP		  0x00FF18E7
+#define REMOTE_DOWN		0x00FF4AB5
+#define REMOTE_LEFT		0x00FF10EF
+#define REMOTE_RIGHT	0x00FF5AA5
+#define REMOTE_OK 		0x00FF38C7
+#define REMOTE_NUM_1	0x00FFA25D
+#define REMOTE_NUM_2 	0x00FF629D
+#define REMOTE_NUM_3 	0x00FFE21D
+#define REMOTE_NUM_4 	0x00FF22DD
+#define REMOTE_NUM_5 	0x00FF02FD
+#define REMOTE_NUM_6 	0x00FFC23D
+#define REMOTE_NUM_7 	0x00FFE01F
+#define REMOTE_NUM_8 	0x00FFA857
+#define REMOTE_NUM_9 	0x00FF906F
+#define REMOTE_NUM_0 	0x00FF9867
+#define REMOTE_STAR 	0x00FF6897
+#define REMOTE_POUND 	0x00FFB04F
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
