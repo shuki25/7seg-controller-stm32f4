@@ -38,6 +38,7 @@
 #include "nmea.h"
 #include "sync_gps_rtc.h"
 #include "adj_date.h"
+#include "splash.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -821,7 +822,7 @@ void StartDefaultTask(void *argument)
 	uint8_t hours_since_start_prev = 0;
 	uint8_t update_display = 0;
 	uint8_t sacrifical_led_prev = 0;
-	uint8_t reset_delay = 50;
+	uint8_t reset_delay = 20;
 	sync_gps_rtc_state_t sync_gps_rtc_state = 0;
 
 	seven_segment_error_t led_error;
@@ -832,32 +833,8 @@ void StartDefaultTask(void *argument)
 	}
 	led.data_sent_flag = 1;
 
-	// Splash Screen
-	seven_segment_set_blank(&led, 0);
-	seven_segment_set_digit(&led, 0, 10, 0);
-	seven_segment_set_digit(&led, 1, 11, 1);
-	seven_segment_set_digit(&led, 2, 12, 2);
-	seven_segment_set_brightness(&led, 25);
-	seven_segment_WS2812_send(&led);
-
-	ssd1306_Init();
-	ssd1306_Fill(Black);
-	ssd1306_SetCursor(16, 3);
-	ssd1306_WriteString("BUTLER", Font_16x26, White);
-	ssd1306_UpdateScreen();
-	osDelay(2000);
-
-	ssd1306_Fill(Black);
-	ssd1306_SetCursor(3, 7);
-	ssd1306_WriteString("ELECTRONICS", Font_11x18, White);
-	ssd1306_UpdateScreen();
-	osDelay(2000);
-
-	ssd1306_Fill(Black);
-	ssd1306_SetCursor(20, 7);
-	ssd1306_WriteString("(C) 2023", Font_11x18, White);
-	ssd1306_UpdateScreen();
-	osDelay(2000);
+	// Splash screen
+	splash(&led);
 
 	// Initialize External RTC
 	pcf.read = &i2c_read;

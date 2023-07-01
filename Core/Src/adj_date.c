@@ -87,7 +87,7 @@ adj_date_status_t adj_date_task(bcd_time_t *bcd, bcd_time_t *current_bcd, RingBu
             break;
         case REMOTE_OK: // Confirm and save
             
-            if (bcd_days_between_dates(bcd, current_bcd) > 0) {
+            if (bcd_days_between_dates(bcd, current_bcd) >= 0) {
                 is_done = 1;
                 snprintf(lcd_buffer, sizeof(lcd_buffer), "Saving Changes");
                 ssd1306_SetCursor(15, 20);
