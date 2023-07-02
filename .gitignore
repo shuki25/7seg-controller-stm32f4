@@ -64,3 +64,8 @@ RemoteSystemsTempFiles/
  
 *.xml
 *.launch
+
+# Visual GDB
+.vs/
+.visualgdb/
+VisualGDB/
