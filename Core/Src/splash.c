@@ -6,12 +6,16 @@
  * Copyright (c) 2023 Joshua Butler
  */
 
+#include <stdio.h>
+#include <string.h>
 #include "splash.h"
 #include "cmsis_os.h"
 
 void splash(seven_segment_t *led)
 {
     uint8_t i;
+	uint8_t buffer[12];
+	
     ssd1306_Init();
 	ssd1306_Fill(Black);
 	ssd1306_SetCursor(16, 3);
@@ -52,4 +56,19 @@ void splash(seven_segment_t *led)
         seven_segment_WS2812_send(led);
         osDelay(125);
     }
+	
+	ssd1306_Fill(Black);
+	snprintf((char *)buffer, 12, "v%d.%d", VERSION_MAJOR, VERSION_MINOR);
+	uint8_t len = strlen((char *)buffer);
+	ssd1306_SetCursor((128 - (len * 11)) >> 1, 7);
+	ssd1306_WriteString((char *)buffer, Font_11x18, White);
+	ssd1306_UpdateScreen();
+
+	seven_segment_set_blank(led, 0);
+	seven_segment_set_blank(led, 1);
+	seven_segment_set_blank(led, 2);
+	seven_segment_set_brightness(led, 25);
+	seven_segment_WS2812_send(led);
+	osDelay(1500);
+	
 }
